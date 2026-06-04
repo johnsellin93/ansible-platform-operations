@@ -1,5 +1,5 @@
 
-# 🛡️ Anticimex Ansible Automation – Operations Documentation
+# 🛡️ Ansible Automation – Operations Documentation
 
 This repository contains the Ansible Automation Platform used to operate and maintain RHEL and Ubuntu servers across the following environments:
 
@@ -26,7 +26,7 @@ The Ansible control node is:
 
 ```
 axabtansibel
-IP: 10.140.22.8
+IP: 
 ```
 
 
