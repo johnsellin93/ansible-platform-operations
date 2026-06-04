@@ -1,11 +1,79 @@
 ---
-- name: security maintenance
+- name: maintenance
   hosts: "{{ target | default('NO_HOSTS_SELECTED') }}"
   gather_facts: true
   become: true
   serial: 2
-  # ansible-playbook -i hosts.ini setup.yml -e target=testvm-rhel --tags selinux
   tasks:
+
+    - name: Configure WireGuard  #Peers are added in /etc/wireguard/wg0.conf
+      tags: [wireguard]
+      ansible.builtin.include_role:
+        name: wireguard
+        apply:
+          tags:
+            - wireguard
+      vars:
+
+        wg:
+          interface: "wg0"
+          purge_peer_registry: false
+          auto_addressing: true
+          network_cidr: ""          
+          listen_port: 51820
+
+          public_endpoint_ip: ""
+          hub_host: "vm1"
+
+          client_allowed_ips:
+            - ""
+            - ""
+
+#           remote_lans: []
+          persistent_keepalive: 25
+          mtu: 1420
+
+          hub_gateway:
+            enabled: true
+            nat: true
+            forward_any: true
+            egress_iface: "{{ ansible_default_ipv4.interface | default('eth0') }}"
+
+
+
+
+    - name: db_params
+      tags: [db_params]
+      block:
+        - name: Apply tunables + compliance checks (DB + OS knobs)
+          include_role:
+            name: db_params
+          vars:
+            # --- Kernel tuning
+            oracle_sysctl_file: /etc/sysctl.d/99-oracle.conf
+            oracle_fs_aio_max_nr: 3145728
+
+            # --- Transparent HugePages (THP) policy (persistent via systemd oneshot) ---
+            oracle_disable_thp: true
+            oracle_thp_service_name: disable-thp.service  # /etc/systemd/system/disable-thp.service
+            oracle_thp_script_path: /usr/local/sbin/thp-disable.sh
+
+            # --- Traditional HugePages (HugeTLB) (only enforce when sized) ---
+            oracle_hugepages_mode: "auto"     # auto-compute oracle_hugepages_nr from SGA
+#             oracle_hugepages_nr: ""           # leave empty in auto mode; hugepages.yml sets it
+            oracle_hugepages_headroom_pct: 5  # reserve 5% less than computed
+            reboot: true                      # reboot recommended to reserve HugeTLB before DB startup
+
+            # --- DB parameter hardening ---
+            oracle_db_params:
+              audit_trail: "DB"
+              filesystemio_options: "SETALL"
+
+            # --- Compliance checks (informational) ---
+            oracle_check_sqlpatch: true
+            oracle_check_opatch: true
+
+
 
     - name: kernel_cleanup_and_upgrade #RHEL
       tags: kernel_cleanup_and_upgrade
@@ -14,14 +82,17 @@
         - include_role:
             name: kernel_cleanup_and_upgrade
           vars:
-            kernel_stream: "both"          # "uek", "rhck", or "both"
+
             installonly_limit_value: 2
             boot_min_free_mb: 360
+            cleanup_only: false # only cleanup never remove running kernel
 
 
     - name: s1_r7
       tags: s1_r7_install
       block:
+        # export R7_TOKEN="..."
+        # export S1_TOKEN="..."
         - include_role:
             name: s1_r7_install
           vars:
@@ -31,26 +102,64 @@
             r7_pkg_src: "./rapid7-insight-agent-4.0.13.32-1.x86_64.rpm"
 
 
-    - name: selinux security
+    - name: selinux
       tags: selinux
       block:
+        # NOTE:
+        # - This role is intended for TEST/POC systems to surface SELinux denials.
+        # - It forces SELinux into enforcing mode and applies hand-crafted fcontexts.
+        # - DO NOT enable in production until all denials in the role’s output have been
+        #   reviewed, resolved, and the resulting policy is confirmed safe.
+        #   "SELinux AVC summary for window='this-month'"
+        #   "Breakdown:"
+        #     - 5 x file /usr/bin/su
+        #     - 1 x passwd/rootok (no file path)
+        #     - 1 x file /usr/bin/xauth
+        #     - 1 x tclass tcontext
+        #
+        # These should normally be handled via a custom policy module, not fcontext changes.
+        # NOTE:
+        # - Use selinux_fcontexts ONLY for app-specific paths with wrong labels.
+        # - Core binaries like /usr/bin/su or /usr/bin/xauth must NOT be “fixed” with fcontexts.
+        # - For those, generate a local SELinux policy module with audit2allow, review it,
+        #   and deploy it via selinux_local_policy_modules (see role docs).
+
         - include_role:
             name: selinux
           vars:
-            selinux_denials_log_path: "/var/log/audit/audit.log" # Audit log used for troubleshooting SELinux denials.
-            selinux_state: enforcing
+            selinux_denials_log_path: "/var/log/audit/audit.log"
+            selinux_state: permissive
             selinux_policy: targeted
-            selinux_fcontexts:  # Example paths explicitly allowed after SELinux denials observed
-              - { path: "/etc/init.d/appstart", setype: "initrc_exec_t" }
-              - { path: "/opt/appsuite/inventory(/.*)?", setype: "var_t" }
-              - { path: "/opt/appsuite/shared(/.*)?", setype: "var_t" }
-              - { path: "/opt/appsuite/bin(/.*)?", setype: "bin_t" }
-              - { path: "/opt/appsuite/log(/.*)?", setype: "var_log_t" }
-              - { path: "/opt/monitoring/agent/agentd", setype: "bin_t" }
-              - { path: "/opt/monitoring/agent(/.*)?", setype: "var_t" }
+            selinux_avc_lookback: "15m"
+
+            selinux_build_local_module: true
+            selinux_local_module_name: "rapid7_local"
+            selinux_fcontexts:
+              - { path: "/etc/init.d/dbora", setype: "initrc_exec_t" }
+              - { path: "/opt/oraInventory(/.*)?", setype: "var_t" }
+              - { path: "/opt/ORCLfmap(/.*)?", setype: "var_t" }
+
+              # --- Rapid7: executables MUST be exec types (not initrc_exec_t, not var_t)
+              - { path: "/opt/rapid7/ir_agent/ir_agent", setype: "bin_t" }
+              - { path: "/opt/rapid7/ir_agent/components(/.*)?/ir_agent", setype: "bin_t" }
+              - { path: "/opt/rapid7/ir_agent/components(/.*)?/rapid7_.*", setype: "bin_t" }
+
+              # --- Rapid7: logs should be var_log_t
+              - { path: "/opt/rapid7/ir_agent/components/endpoint_broker/common(/.*)?\\.log", setype: "var_log_t" }
+
+              # --- Rapid7: configs/certs/data can be var_t (baseline)
+              - { path: "/opt/rapid7/ir_agent/components/bootstrap/common/ssl(/.*)?", setype: "var_t" }
+              - { path: "/opt/rapid7/ir_agent/components/endpoint_broker/common(/.*)?", setype: "var_t" }
+              - { path: "/opt/rapid7/ir_agent/components/insight_agent/common(/.*)?", setype: "var_t" }
+
+              # Optional catch-all for remaining non-exec content under /opt/rapid7
+              - { path: "/opt/rapid7/ir_agent(/.*)?", setype: "var_t" }
+              - { path: "/opt/rapid7/ir_agent/components/endpoint_broker/common/endpoint_broker\\.log", setype: "var_log_t" }
+  #               - { path: '/home/oracle/scripts(/.*)?', setype: 'bin_t' }
+  #               - { path: '/home/oracle/scripts/startup_shutdown\.log', setype: 'var_log_t' }
           when:
             - ansible_facts.os_family == 'RedHat'
-            - "'db' in group_names"
+
 
     - name: os
       tags: os_settings
@@ -60,20 +169,27 @@
             name: os_settings
           vars:
 
+            is_k8s_node: false # Kubernetes workload node: skipping OS-level firewall, sysctl, Python, and AppArmor changes that are managed by the cluster
+
+            add_host_entry: true # Add /etc/hosts entry so the host's name/FQDN resolves locally (SSH, Nginx vhosts, K8s ingress, etc.)
+            hosts_dns_domain: "anticimex.local" # Domain suffix used to construct dynamic /etc/hosts entry (e.g. "<IP> <hostname> <hostname>.anticimex.local")
+
             oracle_shutdown_user: oracle # roles/os_settings/templates/oracle-pre-shutdown.service.j2
-            oracle_shutdown_cmd: "/home/oracle/scripts/stop.sh >> /home/oracle/scripts/startup_shutdown.log 2>&1"  # Oracle DB service stopped before reboot via oracle-pre-shutdown.service before any system reboot, halt, or poweroff
+            oracle_shutdown_cmd: "/home/oracle/scripts/stop_all.sh >> /home/oracle/scripts/startup_shutdown.log 2>&1"  # Oracle DB service stopped before reboot via oracle-pre-shutdown.service before any system reboot, halt, or poweroff
 
             python_venv_dir: /opt/pyenv
             python_version: 3.13.0
             env_global: true # expose python venv system-wide (login shells, interactive bash, zsh, systemd services, cron)
 
-            packages:
-              ubuntu: "auditd, apparmor, apparmor-utils, ufw, ripgrep, vim, tmux, curl, dnsutils, firewalld, tar, jq, needrestart, rsync, unzip, ca-certificates"
-              rhel: "auditd, ripgrep, vim-enhanced, tmux, rsync, zip, unzip, tar, jq, iproute, net-tools, traceroute, bind-utils, firewalld, chrony, policycoreutils-python-utils, setools-console, ca-certificates"
 
-            allowed_tcp_ports_rhel: ["22", "4450", "22300"]
+            ubuntu: "auditd, apparmor, apparmor-utils, ufw, ripgrep, vim, tmux, curl, dnsutils, firewalld, tar, jq, needrestart, rsync, unzip, ca-certificates"
+            rhel: "policycoreutils-python-utils, audit, ripgrep, vim-enhanced, tmux, rsync, zip, unzip, tar, jq, iproute, net-tools, traceroute, bind-utils, firewalld, chrony, setools-console, ca-certificates"
+            enable_firewall: false
+            allowed_tcp_ports_rhel: ["22", "1521", "3389", "445", "443", "53"]
             allowed_tcp_ports_ubuntu: ["22", "443"]
-            firewall_udp_ports: ["123"] #ntp
+            firewall_udp_ports_ubuntu: ["4745"]
+            firewall_udp_ports_rhel: ["123"]
+
             firewalld_zone: public      # public zone typically allows inbound SSH and explicitly whitelisted services but denies everything else
 
             selinux_state: "permissive"   # RHEL-family (enforcing|permissive|disabled) # Do NOT change to enforcing until you've reviewed: /var/log/audit.log
@@ -83,29 +199,37 @@
             unattended_auto_upgrade: false              # No auto upgrade
             unattended_auto_update_security: true       # roles/os_settings/tasks/auto-update_rhel_ubuntu_security.yml
             automatic_restart: false                    # roles/os_settings/tasks/automatic_restart.yml
-            security_update_calendar: '*-*-15 18:00:00'
+            security_update_calendar: '*-*-15 18:00:00' # critical
 
             rdp_service: xrdp
             rdp_timer_pause:  "*-*-* 00:00:00" #systemctl stop xrdp.service
             rdp_timer_start: "*-*-* 06:00:00" #systemctl start xrdp.service
 
-            sshd_config_path: /etc/ssh/sshd_config #roles/os_settings/templates/sshd_config.j2
+            sshd_config_path: /etc/ssh/sshd_config #roles/os_settings/templates/sshd_config.j2 #Enables both public key auth and password authentication
 
             sysctl_file: /etc/sysctl.d/99-hardening.conf
             sysctl_params:
-              net.ipv4.conf.all.rp_filter: 1            # drop spoofed source ips
+              # net.ipv4.conf.all.rp_filter: 1            # drop spoofed source ips #Conflicts with kubernetes
               net.ipv4.tcp_syncookies: 1                # mitigate syn floods
               net.ipv4.conf.all.accept_redirects: 0     # ignore icmp redirects (v4)
               net.ipv6.conf.all.accept_redirects: 0     # ignore icmp redirects (v6)
               kernel.kptr_restrict: 2                   # hide kernel pointers
               kernel.dmesg_restrict: 1                  # restrict dmesg to root
 
-            timesync_enabled: true                      # Enable OS-level NTP client
+            timesync_enabled: true   # Enable the system NTP client (chrony/systemd-timesyncd).
+                        # Accurate time is critical for:
+                        # - Snapshots & backups: ensures consistent restore points and prevents timestamp drift.
+                        # - Distributed systems / Kubernetes: nodes require tight time sync for certificates,
+                        #   cluster health checks, leader election, and log correlation.
+                        # - Security: avoids issues with Kerberos, TLS cert validity, and time-based tokens.
+                        # - Logging & auditing: makes event ordering reliable across servers.
+                        # - Database replication: prevents replication lag caused by clock skew.
             timesync_ntp_servers:                        # list of NTP servers or pools to sync time from
               - 0.europe.pool.ntp.org
               - 1.europe.pool.ntp.org
               - 2.europe.pool.ntp.org
               - 3.europe.pool.ntp.org
+
 
             fail2ban: true
             jail_path: /etc/fail2ban/jail.local
@@ -116,6 +240,9 @@
             ignoreip:
               - "127.0.0.1/8" # CIDRs
               - "::1"
+            # Installs and enables Fail2Ban with sane defaults.
+            # Uses systemd logs and enables common jails (e.g. sshd).
+            # Bans IPs with repeated failures; ignoreip is whitelisted.
 
     - name: cache
       tags: cache_settings
