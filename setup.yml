@@ -135,7 +135,7 @@
             selinux_build_local_module: true
             selinux_local_module_name: "rapid7_local"
             selinux_fcontexts:
-              - { path: "/etc/init.d/dbora", setype: "initrc_exec_t" }
+              - { path: "/etc/init.d/dbora", setype: "initrc_exec_t" } #standard oracle setup
               - { path: "/opt/oraInventory(/.*)?", setype: "var_t" }
               - { path: "/opt/ORCLfmap(/.*)?", setype: "var_t" }
 
@@ -175,20 +175,20 @@
             hosts_dns_domain: "anticimex.local" # Domain suffix used to construct dynamic /etc/hosts entry (e.g. "<IP> <hostname> <hostname>.anticimex.local")
 
             oracle_shutdown_user: oracle # roles/os_settings/templates/oracle-pre-shutdown.service.j2
-            oracle_shutdown_cmd: "/home/oracle/scripts/stop_all.sh >> /home/oracle/scripts/startup_shutdown.log 2>&1"  # Oracle DB service stopped before reboot via oracle-pre-shutdown.service before any system reboot, halt, or poweroff
+            oracle_shutdown_cmd: "/home/oracle/scripts/stop_all.sh >> /home/oracle/scripts/startup_shutdown.log 2>&1"  # systemctl shutdown -f or systemctl reboot safeguard oracle-pre-shutdown.service before 
 
-            python_venv_dir: /opt/pyenv
+            python_venv_dir: /opt/pyenv #python globally
             python_version: 3.13.0
-            env_global: true # expose python venv system-wide (login shells, interactive bash, zsh, systemd services, cron)
+            env_global: true # login shells, interactive bash, zsh, systemd services, cron)
 
 
             ubuntu: "auditd, apparmor, apparmor-utils, ufw, ripgrep, vim, tmux, curl, dnsutils, firewalld, tar, jq, needrestart, rsync, unzip, ca-certificates"
             rhel: "policycoreutils-python-utils, audit, ripgrep, vim-enhanced, tmux, rsync, zip, unzip, tar, jq, iproute, net-tools, traceroute, bind-utils, firewalld, chrony, setools-console, ca-certificates"
             enable_firewall: false
-            allowed_tcp_ports_rhel: ["22", "1521", "3389", "445", "443", "53"]
+            allowed_tcp_ports_rhel: ["22", "443", "3389"]
             allowed_tcp_ports_ubuntu: ["22", "443"]
-            firewall_udp_ports_ubuntu: ["4745"]
-            firewall_udp_ports_rhel: ["123"]
+            firewall_udp_ports_ubuntu: [""]
+            firewall_udp_ports_rhel: [""]
 
             firewalld_zone: public      # public zone typically allows inbound SSH and explicitly whitelisted services but denies everything else
 
@@ -197,11 +197,11 @@
             reboot_when_required: false  # If true, role will reboot automatically when required; if false, it will warn that reboot is required to apply enforcing settings
 
             unattended_auto_upgrade: false              # No auto upgrade
-            unattended_auto_update_security: true       # roles/os_settings/tasks/auto-update_rhel_ubuntu_security.yml
+            unattended_auto_update_security: true       # roles/os_settings/tasks/auto-update_rhel_ubuntu_security.yml #only install security updates
             automatic_restart: false                    # roles/os_settings/tasks/automatic_restart.yml
             security_update_calendar: '*-*-15 18:00:00' # critical
 
-            rdp_service: xrdp
+            rdp_service: xrdp #shutoff service within these times.
             rdp_timer_pause:  "*-*-* 00:00:00" #systemctl stop xrdp.service
             rdp_timer_start: "*-*-* 06:00:00" #systemctl start xrdp.service
 
@@ -232,7 +232,7 @@
 
 
             fail2ban: true
-            jail_path: /etc/fail2ban/jail.local
+            jail_path: /etc/fail2ban/jail.local #banned ips public authenticaiton only preffered
             backend: systemd                     # journald for backend
             bantime: "1h"
             findtime: "10m"                      # Count retries
