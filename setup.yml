@@ -172,7 +172,7 @@
             is_k8s_node: false # Kubernetes workload node: skipping OS-level firewall, sysctl, Python, and AppArmor changes that are managed by the cluster
 
             add_host_entry: true # Add /etc/hosts entry so the host's name/FQDN resolves locally (SSH, Nginx vhosts, K8s ingress, etc.)
-            hosts_dns_domain: "anticimex.local" # Domain suffix used to construct dynamic /etc/hosts entry (e.g. "<IP> <hostname> <hostname>.anticimex.local")
+            hosts_dns_domain: "/etc/hosts entry" ## Domain suffix used to construct dynamic /etc/hosts entry (e.g. "<IP> <hostname> <hostname>.anticimex.local")
 
             oracle_shutdown_user: oracle # roles/os_settings/templates/oracle-pre-shutdown.service.j2
             oracle_shutdown_cmd: "/home/oracle/scripts/stop_all.sh >> /home/oracle/scripts/startup_shutdown.log 2>&1"  # systemctl shutdown -f or systemctl reboot safeguard oracle-pre-shutdown.service before 
