@@ -33,12 +33,8 @@ IP:
 Verify access:
 
 ```
-ssh root@10.140.22.8 -p 22
 ```
 
-🔐 The root password for the Ansible server is stored in KeePass in ITS.kdbx under **axabtansibel** (used only for first-time key install).
-
----
 
 ### 1.2 SSH Trust Between Ansible → Target Hosts (Mandatory)
 Ansible connects from the Ansible server to the managed servers using SSH keys.
